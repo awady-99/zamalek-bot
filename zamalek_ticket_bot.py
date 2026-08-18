@@ -88,11 +88,14 @@ class Config:
     telegram_chat_id: str = _env_str("TELEGRAM_CHAT_ID", "")
     tazkarti_url: str = _env_str("TAZKARTI_URL", "https://www.tazkarti.com/ar/events")
     team_keywords: list[str] = field(
-        default_factory=lambda: _env_list("TEAM_KEYWORDS", ["Zamalek", "zamalek", "الزمالك"])
+        default_factory=lambda: _env_list("TEAM_KEYWORDS", ["Zamalek", "zamalek", "الزمالك", "Zamalek SC", "zamalek sc", "نادي الزمالك"])
     )
     available_keywords: list[str] = field(
         default_factory=lambda: _env_list(
-            "AVAILABLE_KEYWORDS", ["Book Now", "Buy Now", "Available", "احجز الان", "احجز الآن", "متاح"]
+            "AVAILABLE_KEYWORDS", [
+                "Book Now", "Buy Now", "Available", "Book Ticket", "book ticket",
+                "احجز الان", "احجز الآن", "متاح", "حجز تذكرة", "حجز تذكره"
+            ]
         )
     )
     sold_out_keywords: list[str] = field(
