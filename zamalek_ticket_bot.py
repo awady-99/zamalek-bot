@@ -101,7 +101,7 @@ class Config:
         )
     )
 
-    check_interval_seconds: float = _env_float("CHECK_INTERVAL_SECONDS", 20.0)
+    check_interval_seconds: float = _env_float("CHECK_INTERVAL_SECONDS", 1.0)
     jitter_seconds: float = _env_float("JITTER_SECONDS", 4.0)
     request_timeout_seconds: float = _env_float("REQUEST_TIMEOUT_SECONDS", 20.0)
     max_retries: int = _env_int("MAX_RETRIES", 4)
