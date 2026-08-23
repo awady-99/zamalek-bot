@@ -1,11 +1,15 @@
 name: Run Zamalek Bot
 
 on:
+  schedule:
+    # يعمل تلقائياً كل 5 ساعات لضمان استمراره دون انقطاع
+    - cron: '0 */5 * * *'
   workflow_dispatch:
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v3
 
