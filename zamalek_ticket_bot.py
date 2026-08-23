@@ -2,8 +2,8 @@
 """
 zamalek_ticket_bot.py
 ======================
-Ultra-fast, direct JSON API monitor for Tazkarti Zamalek matches.
-Polls every 3 seconds with zero overhead and full /ping support.
+Ultra-reliable Tazkarti JSON API monitor for Zamalek matches.
+Detects match presence directly from backend payload without depending on UI button text.
 """
 
 from __future__ import annotations
@@ -48,8 +48,6 @@ def _env_list(name: str, default: list[str]) -> list[str]:
 class Config:
     telegram_bot_token: str = _env_str("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = _env_str("TELEGRAM_CHAT_ID", "")
-    
-    # Endpoint المباشر السريع لموقع تذكرتي
     api_url: str = "https://tazkarti.com/data/matches-list-json.json"
     
     team_keywords: list[str] = field(
@@ -58,15 +56,9 @@ class Config:
             ["Zamalek", "zamalek", "الزمالك", "Zamalek SC", "نادي الزمالك"]
         )
     )
-    available_keywords: list[str] = field(
-        default_factory=lambda: _env_list(
-            "AVAILABLE_KEYWORDS",
-            ["Book Ticket", "Book Now", "Available", "حجز تذكرة", "احجز الان", "احجز الآن", "متاح"]
-        )
-    )
 
     check_interval_seconds: float = _env_float("CHECK_INTERVAL_SECONDS", 3.0)
-    request_timeout_seconds: float = _env_float("REQUEST_TIMEOUT_SECONDS", 5.0)
+    request_timeout_seconds: float = _env_float("REQUEST_TIMEOUT_SECONDS", 6.0)
 
     def validate(self) -> None:
         if not self.telegram_bot_token or not self.telegram_chat_id:
@@ -104,12 +96,11 @@ class TelegramNotifier:
             log.error("Telegram send error: %s", exc)
             return False
 
-    def alert_ticket_available(self, match_title: str, match_date: str = "") -> bool:
+    def alert_ticket_available(self, match_title: str, match_details: str = "") -> bool:
         text = (
-            "🚨 <b>تذاكر الزمالك نزلت الآن!</b> 🚨\n\n"
+            "🚨🚨 <b>تذاكر الزمالك نزلت الآن على تذكرتي!</b> 🚨🚨\n\n"
             f"🏟️ <b>{match_title}</b>\n"
-            f"🗓️ {match_date or 'الموعد محدد على الموقع'}\n"
-            f"🎟️ الحالة: <b>متاح للحجز فوراً</b>\n\n"
+            f"ℹ️ {match_details}\n\n"
             "👉 <a href=\"https://www.tazkarti.com/#/matches\">اضغط هنا للدخول على الحجز فوراً</a>"
         )
         return self.send(text)
@@ -123,8 +114,9 @@ class FastMonitor:
         self._session = requests.Session()
         self.total_polls = 0
         self.start_time = time.time()
-        self.last_poll_time = "جارٍ البدء..."
-        self.known_available_matches: set[str] = set()
+        self.last_poll_time = "جارٍ الفحص..."
+        self.seen_matches: set[str] = set()
+        self.latest_detected_titles: list[str] = []
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -153,12 +145,14 @@ class FastMonitor:
                             m, s = divmod(uptime_sec, 60)
                             h, m = divmod(m, 60)
                             
+                            matches_info = "\n".join([f"• {t}" for t in self.latest_detected_titles[:3]]) if self.latest_detected_titles else "لا توجد مباريات معروضة حالياً"
+
                             status_text = (
-                                "⚡ <b>البوت السريع شغال بأقصى كفاءة:</b>\n\n"
+                                "⚡ <b>حالة البوت المباشرة:</b>\n\n"
                                 f"⏱️ <b>مدة العمل:</b> {h} ساعة و {m} دقيقة\n"
                                 f"🔄 <b>مرات الفحص:</b> {self.total_polls}\n"
-                                f"🕒 <b>آخر فحص:</b> {self.last_poll_time}\n"
-                                f"🎯 <b>النوع:</b> Direct Fast API (~3s)"
+                                f"🕒 <b>آخر فحص:</b> {self.last_poll_time}\n\n"
+                                f"📋 <b>المباريات المرصودة في تذكرتي:</b>\n{matches_info}"
                             )
                             self.notifier.send(status_text)
             except Exception:
@@ -166,7 +160,6 @@ class FastMonitor:
             await asyncio.sleep(2)
 
     def _fetch_matches_json(self) -> list[dict]:
-        # نضع timestamp في الرابط لمنع الـ Caching والحصول على أحدث داتا حية
         url = f"{self.cfg.api_url}?_={int(time.time() * 1000)}"
         resp = self._session.get(url, headers=HEADERS, timeout=self.cfg.request_timeout_seconds)
         if resp.status_code == 200:
@@ -174,11 +167,11 @@ class FastMonitor:
             if isinstance(data, list):
                 return data
             elif isinstance(data, dict):
-                return data.get("data", []) or data.get("matches", []) or [data]
+                return data.get("data", []) or data.get("matches", []) or data.get("result", []) or [data]
         return []
 
     async def run(self) -> None:
-        log.info("Direct JSON Fast Monitor started. Polling every %.1fs", self.cfg.check_interval_seconds)
+        log.info("Direct JSON Monitor running with instant match detection.")
         asyncio.create_task(self._telegram_listener_loop())
 
         while not self._stop.is_set():
@@ -188,35 +181,43 @@ class FastMonitor:
                 self.total_polls += 1
                 self.last_poll_time = datetime.now().strftime("%I:%M:%S %p")
 
+                current_titles = []
                 for match in matches:
-                    # تحويل كائن الماتش بالكامل إلى نص لفحصه بسهولة
-                    match_str = json.dumps(match, ensure_ascii=False)
+                    raw_str = json.dumps(match, ensure_ascii=False)
                     
-                    # التحقق من أن الماتش للزمالك
-                    is_zamalek = any(k.lower() in match_str.lower() for k in self.cfg.team_keywords)
+                    # استخراج اسم الماتش من أي حقل محتمل
+                    title = (
+                        match.get("matchName") or 
+                        match.get("title") or 
+                        match.get("name") or 
+                        match.get("eventName") or 
+                        f"{match.get('team1', '')} vs {match.get('team2', '')}".strip() or
+                        "مباراة في الدوري / الكأس"
+                    )
+                    current_titles.append(title)
+
+                    # التحقق من أن المباراة تخص الزمالك
+                    is_zamalek = any(k.lower() in raw_str.lower() for k in self.cfg.team_keywords)
                     if not is_zamalek:
                         continue
 
-                    # استخراج اسم المباراة أو الفرق
-                    title = match.get("matchName") or match.get("title") or match.get("name") or "مباراة نادي الزمالك"
-                    match_date = match.get("matchDate") or match.get("date") or ""
-                    match_id = str(match.get("id") or match.get("matchId") or title)
+                    # معرف فريد للمباراة
+                    match_key = str(match.get("id") or match.get("matchId") or title)
 
-                    # التحقق من حالة توفر التذاكر
-                    is_available = any(k.lower() in match_str.lower() for k in self.cfg.available_keywords)
+                    # فحص إذا كانت المباراة غير مغلقة
+                    is_sold_out = any(bad in raw_str.lower() for bad in ["soldout", "sold_out", "نفذت", "closed"])
+                    
+                    # إذا ظهرت المباراة لأول مرة ولم تنفد تذاكرها
+                    if not is_sold_out and match_key not in self.seen_matches:
+                        log.warning("ZAMALEK MATCH FOUND: %s", title)
+                        date_info = match.get("matchDate") or match.get("date") or match.get("eventDate") or ""
+                        self.notifier.alert_ticket_available(title, f"التاريخ: {date_info}" if date_info else "")
+                        self.seen_matches.add(match_key)
 
-                    if is_available:
-                        if match_id not in self.known_available_matches:
-                            log.warning("ZAMALEK TICKETS AVAILABLE -> %s", title)
-                            self.notifier.alert_ticket_available(title, match_date)
-                            self.known_available_matches.add(match_id)
-                    else:
-                        self.known_available_matches.discard(match_id)
-
-                log.info("Checked matches successfully. Total checks: %d", self.total_polls)
+                self.latest_detected_titles = current_titles
 
             except Exception as exc:
-                log.error("Fetch API error: %s", exc)
+                log.error("API error: %s", exc)
 
             elapsed = time.monotonic() - cycle_start
             sleep_for = max(0.5, self.cfg.check_interval_seconds - elapsed)
