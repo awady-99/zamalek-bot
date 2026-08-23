@@ -3,7 +3,7 @@
 zamalek_ticket_bot.py
 ======================
 Ultra-reliable Tazkarti JSON API monitor for Zamalek matches.
-Detects match presence directly from backend payload without depending on UI button text.
+Includes a lightweight built-in HTTP server for keep-alive / 24-7 uptime pinging.
 """
 
 from __future__ import annotations
@@ -14,16 +14,37 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
-from typing import Optional
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+# --- Built-in Web Server for 24/7 Keep-Alive ---
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"Zamalek Ticket Bot is Running 24/7!")
+
+    def log_message(self, format, *args):
+        # تعطيل طباعة لوجات الويب لتقليل الزحمة في الـ Console
+        pass
+
+
+def start_web_server(port: int = 8080):
+    try:
+        server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+        server.serve_forever()
+    except Exception as exc:
+        logging.error("Web server error: %s", exc)
 
 
 def _env_str(name: str, default: str) -> str:
@@ -185,7 +206,6 @@ class FastMonitor:
                 for match in matches:
                     raw_str = json.dumps(match, ensure_ascii=False)
                     
-                    # استخراج اسم الماتش من أي حقل محتمل
                     title = (
                         match.get("matchName") or 
                         match.get("title") or 
@@ -196,18 +216,13 @@ class FastMonitor:
                     )
                     current_titles.append(title)
 
-                    # التحقق من أن المباراة تخص الزمالك
                     is_zamalek = any(k.lower() in raw_str.lower() for k in self.cfg.team_keywords)
                     if not is_zamalek:
                         continue
 
-                    # معرف فريد للمباراة
                     match_key = str(match.get("id") or match.get("matchId") or title)
-
-                    # فحص إذا كانت المباراة غير مغلقة
                     is_sold_out = any(bad in raw_str.lower() for bad in ["soldout", "sold_out", "نفذت", "closed"])
                     
-                    # إذا ظهرت المباراة لأول مرة ولم تنفد تذاكرها
                     if not is_sold_out and match_key not in self.seen_matches:
                         log.warning("ZAMALEK MATCH FOUND: %s", title)
                         date_info = match.get("matchDate") or match.get("date") or match.get("eventDate") or ""
@@ -229,6 +244,13 @@ class FastMonitor:
 
 async def _amain() -> None:
     CONFIG.validate()
+    
+    # تشغيل خادم الويب على بورت 8080 في خلفية منفصلة
+    port = int(os.getenv("PORT", 8080))
+    web_thread = threading.Thread(target=start_web_server, args=(port,), daemon=True)
+    web_thread.start()
+    log.info("Keep-alive Web server listening on port %s", port)
+
     monitor = FastMonitor(CONFIG)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
