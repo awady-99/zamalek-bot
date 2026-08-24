@@ -166,14 +166,14 @@ class FastMonitor:
                             m, s = divmod(uptime_sec, 60)
                             h, m = divmod(m, 60)
                             
-                            matches_info = "\n".join([f"• {t}" for t in self.latest_detected_titles[:3]]) if self.latest_detected_titles else "لا توجد مباريات معروضة حالياً"
+                            matches_info = "\n".join([f"• {t}" for t in self.latest_detected_titles[:5]]) if self.latest_detected_titles else "لا توجد مباريات معروضة حالياً"
 
                             status_text = (
                                 "⚡ <b>حالة البوت المباشرة:</b>\n\n"
                                 f"⏱️ <b>مدة العمل:</b> {h} ساعة و {m} دقيقة\n"
                                 f"🔄 <b>مرات الفحص:</b> {self.total_polls}\n"
                                 f"🕒 <b>آخر فحص:</b> {self.last_poll_time}\n\n"
-                                f"📋 <b>المباريات المرصودة في تذكرتي:</b>\n{matches_info}"
+                                f"📋 <b>المباريات الحقيقية المرصودة:</b>\n{matches_info}"
                             )
                             self.notifier.send(status_text)
             except Exception:
@@ -206,14 +206,28 @@ class FastMonitor:
                 for match in matches:
                     raw_str = json.dumps(match, ensure_ascii=False)
                     
+                    # استخراج أسماء الفرق إن وجدت
+                    t1 = str(match.get('team1') or "").strip()
+                    t2 = str(match.get('team2') or "").strip()
+                    fallback_title = f"{t1} vs {t2}".strip()
+                    
+                    if fallback_title == "vs":
+                        fallback_title = ""
+
                     title = (
                         match.get("matchName") or 
                         match.get("title") or 
                         match.get("name") or 
                         match.get("eventName") or 
-                        f"{match.get('team1', '')} vs {match.get('team2', '')}".strip() or
-                        "مباراة في الدوري / الكأس"
+                        fallback_title
                     )
+
+                    # --- فلتر الأمان للقوالب الوهمية ---
+                    # إذا كان العنوان فارغاً أو يحتوي فقط على "vs" يتم تجاهله تماماً
+                    if not title or str(title).strip().lower() == "vs":
+                        continue
+                    
+                    title = str(title).strip()
                     current_titles.append(title)
 
                     is_zamalek = any(k.lower() in raw_str.lower() for k in self.cfg.team_keywords)
