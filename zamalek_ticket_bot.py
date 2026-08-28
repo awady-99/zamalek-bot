@@ -138,6 +138,7 @@ class FastMonitor:
         self.last_api_status = "جاري الاتصال..."
         self.seen_matches: set[str] = set()
         self.latest_detected_titles: list[str] = []
+        self.last_raw_match: dict = {}
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -161,22 +162,29 @@ class FastMonitor:
                         text = msg.get("text", "").strip().lower()
                         sender_id = str(msg.get("chat", {}).get("id", ""))
 
-                        if sender_id == str(self.cfg.telegram_chat_id) and text in ("/ping", "/status", "ping", "status"):
-                            uptime_sec = int(time.time() - self.start_time)
-                            m, s = divmod(uptime_sec, 60)
-                            h, m = divmod(m, 60)
-                            
-                            matches_info = "\n".join([f"• {t}" for t in self.latest_detected_titles[:5]]) if self.latest_detected_titles else "لا توجد مباريات معروضة حالياً"
+                        if sender_id == str(self.cfg.telegram_chat_id):
+                            if text in ("/ping", "/status", "ping", "status"):
+                                uptime_sec = int(time.time() - self.start_time)
+                                m, s = divmod(uptime_sec, 60)
+                                h, m = divmod(m, 60)
+                                
+                                matches_info = "\n".join([f"• {t}" for t in self.latest_detected_titles[:5]]) if self.latest_detected_titles else "لا توجد مباريات معروضة حالياً"
 
-                            status_text = (
-                                "⚡ <b>حالة البوت المباشرة:</b>\n\n"
-                                f"⏱️ <b>مدة العمل:</b> {h} ساعة و {m} دقيقة\n"
-                                f"🔄 <b>مرات الفحص:</b> {self.total_polls}\n"
-                                f"🕒 <b>آخر فحص:</b> {self.last_poll_time}\n"
-                                f"📡 <b>حالة الاتصال:</b> {self.last_api_status}\n\n"
-                                f"📋 <b>المباريات الحقيقية المرصودة:</b>\n{matches_info}"
-                            )
-                            self.notifier.send(status_text)
+                                status_text = (
+                                    "⚡ <b>حالة البوت المباشرة:</b>\n\n"
+                                    f"⏱️ <b>مدة العمل:</b> {h} ساعة و {m} دقيقة\n"
+                                    f"🔄 <b>مرات الفحص:</b> {self.total_polls}\n"
+                                    f"🕒 <b>آخر فحص:</b> {self.last_poll_time}\n"
+                                    f"📡 <b>حالة الاتصال:</b> {self.last_api_status}\n\n"
+                                    f"📋 <b>المباريات الحقيقية المرصودة:</b>\n{matches_info}"
+                                )
+                                self.notifier.send(status_text)
+                            elif text in ("/debug", "debug"):
+                                if self.last_raw_match:
+                                    debug_text = json.dumps(self.last_raw_match, ensure_ascii=False, indent=2)[:3500]
+                                    self.notifier.send(f"🛠️ <b>بيانات الماتش الخام:</b>\n<pre>{debug_text}</pre>")
+                                else:
+                                    self.notifier.send("لا توجد بيانات متاحة حالياً.")
             except Exception:
                 pass
             await asyncio.sleep(2)
@@ -198,13 +206,13 @@ class FastMonitor:
                                 return v
                         return [data]
                 except json.JSONDecodeError:
-                    self.last_api_status = "⚠️ الموقع يطلب كابتشا (تم حظر السيرفر من Cloudflare)"
+                    self.last_api_status = "⚠️ الموقع يطلب كابتشا (تم حظر السيرفر)"
                     return []
             else:
                 self.last_api_status = f"⚠️ حظر من الموقع (كود {resp.status_code})"
                 return []
         except Exception as e:
-            self.last_api_status = "⚠️ خطأ في الاتصال بالإنترنت"
+            self.last_api_status = "⚠️ خطأ في الاتصال"
             return []
 
     async def run(self) -> None:
@@ -217,6 +225,9 @@ class FastMonitor:
                 matches = await asyncio.to_thread(self._fetch_matches_json)
                 self.total_polls += 1
                 self.last_poll_time = datetime.now().strftime("%I:%M:%S %p")
+
+                if matches and isinstance(matches, list) and len(matches) > 0:
+                    self.last_raw_match = matches[0]
 
                 current_titles = []
                 for match in matches:
