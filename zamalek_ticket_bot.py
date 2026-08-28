@@ -68,7 +68,8 @@ def _env_list(name: str, default: list[str]) -> list[str]:
 class Config:
     telegram_bot_token: str = _env_str("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = _env_str("TELEGRAM_CHAT_ID", "")
-    api_url: str = "https://tazkarti.com/data/fanQueuesMatch-list-json.json"
+    # عدنا للملف الأصلي الذي يحتوي على أسماء الفرق والبطولات
+    api_url: str = "https://tazkarti.com/data/matches-list-json.json"
     
     team_keywords: list[str] = field(
         default_factory=lambda: _env_list(
@@ -184,7 +185,7 @@ class FastMonitor:
                                     debug_text = json.dumps(self.last_raw_match, ensure_ascii=False, indent=2)[:3500]
                                     self.notifier.send(f"🛠️ <b>بيانات الماتش الخام:</b>\n<pre>{debug_text}</pre>")
                                 else:
-                                    self.notifier.send("لا توجد بيانات متاحة حالياً.")
+                                    self.notifier.send("لا توجد بيانات متاحة حالياً. تأكد من أن الموقع يعمل.")
             except Exception:
                 pass
             await asyncio.sleep(2)
@@ -228,6 +229,8 @@ class FastMonitor:
 
                 if matches and isinstance(matches, list) and len(matches) > 0:
                     self.last_raw_match = matches[0]
+                elif matches:
+                    self.last_raw_match = matches
 
                 current_titles = []
                 for match in matches:
