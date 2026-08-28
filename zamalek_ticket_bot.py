@@ -35,7 +35,6 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Zamalek Ticket Bot is Running 24/7!")
 
     def log_message(self, format, *args):
-        # تعطيل طباعة لوجات الويب لتقليل الزحمة في الـ Console
         pass
 
 
@@ -69,7 +68,6 @@ def _env_list(name: str, default: list[str]) -> list[str]:
 class Config:
     telegram_bot_token: str = _env_str("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = _env_str("TELEGRAM_CHAT_ID", "")
-    # تم التعديل هنا لقراءة ملف المباريات الجماهيرية
     api_url: str = "https://tazkarti.com/data/fanQueuesMatch-list-json.json"
     
     team_keywords: list[str] = field(
@@ -137,6 +135,7 @@ class FastMonitor:
         self.total_polls = 0
         self.start_time = time.time()
         self.last_poll_time = "جارٍ الفحص..."
+        self.last_api_status = "جاري الاتصال..."
         self.seen_matches: set[str] = set()
         self.latest_detected_titles: list[str] = []
 
@@ -173,7 +172,8 @@ class FastMonitor:
                                 "⚡ <b>حالة البوت المباشرة:</b>\n\n"
                                 f"⏱️ <b>مدة العمل:</b> {h} ساعة و {m} دقيقة\n"
                                 f"🔄 <b>مرات الفحص:</b> {self.total_polls}\n"
-                                f"🕒 <b>آخر فحص:</b> {self.last_poll_time}\n\n"
+                                f"🕒 <b>آخر فحص:</b> {self.last_poll_time}\n"
+                                f"📡 <b>حالة الاتصال:</b> {self.last_api_status}\n\n"
                                 f"📋 <b>المباريات الحقيقية المرصودة:</b>\n{matches_info}"
                             )
                             self.notifier.send(status_text)
@@ -186,16 +186,26 @@ class FastMonitor:
         try:
             resp = self._session.get(url, headers=HEADERS, timeout=self.cfg.request_timeout_seconds)
             if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list):
-                    return data
-                elif isinstance(data, dict):
-                    return data.get("data", []) or data.get("matches", []) or data.get("result", []) or [data]
+                try:
+                    data = resp.json()
+                    self.last_api_status = "متصل بنجاح 🟢"
+                    
+                    if isinstance(data, list):
+                        return data
+                    elif isinstance(data, dict):
+                        for k, v in data.items():
+                            if isinstance(v, list) and len(v) > 0:
+                                return v
+                        return [data]
+                except json.JSONDecodeError:
+                    self.last_api_status = "⚠️ الموقع يطلب كابتشا (تم حظر السيرفر من Cloudflare)"
+                    return []
             else:
-                log.error(f"Tazkarti API Error: HTTP {resp.status_code} - السيرفر غالباً محظور")
+                self.last_api_status = f"⚠️ حظر من الموقع (كود {resp.status_code})"
+                return []
         except Exception as e:
-            log.error(f"Connection Error: {e}")
-        return []
+            self.last_api_status = "⚠️ خطأ في الاتصال بالإنترنت"
+            return []
 
     async def run(self) -> None:
         log.info("Direct JSON Monitor running with instant match detection.")
@@ -212,14 +222,10 @@ class FastMonitor:
                 for match in matches:
                     raw_str = json.dumps(match, ensure_ascii=False)
                     
-                    # استخراج أسماء الفرق إن وجدت
                     t1 = str(match.get('team1') or "").strip()
                     t2 = str(match.get('team2') or "").strip()
                     fallback_title = f"{t1} vs {t2}".strip()
                     
-                    if fallback_title == "vs":
-                        fallback_title = ""
-
                     title = (
                         match.get("matchName") or 
                         match.get("title") or 
@@ -228,9 +234,8 @@ class FastMonitor:
                         fallback_title
                     )
 
-                    # --- فلتر الأمان للقوالب الوهمية ---
-                    if not title or str(title).strip().lower() == "vs":
-                        continue
+                    if not title or title.lower() == "vs":
+                        title = f"مباراة (ID: {match.get('id', match.get('matchId', 'غير معروف'))})"
                     
                     title = str(title).strip()
                     current_titles.append(title)
@@ -245,9 +250,7 @@ class FastMonitor:
                     if not is_sold_out and match_key not in self.seen_matches:
                         log.warning("ZAMALEK MATCH FOUND: %s", title)
                         
-                        # استخراج اسم البطولة
                         tournament_info = str(match.get("championshipName") or match.get("tournamentName") or match.get("tournament") or "").strip()
-                        
                         self.notifier.alert_ticket_available(title, tournament_info)
                         self.seen_matches.add(match_key)
 
@@ -267,7 +270,6 @@ class FastMonitor:
 async def _amain() -> None:
     CONFIG.validate()
     
-    # تشغيل خادم الويب على بورت 8080 في خلفية منفصلة
     port = int(os.getenv("PORT", 8080))
     web_thread = threading.Thread(target=start_web_server, args=(port,), daemon=True)
     web_thread.start()
