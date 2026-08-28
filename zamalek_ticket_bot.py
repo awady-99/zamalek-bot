@@ -69,7 +69,8 @@ def _env_list(name: str, default: list[str]) -> list[str]:
 class Config:
     telegram_bot_token: str = _env_str("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = _env_str("TELEGRAM_CHAT_ID", "")
-    api_url: str = "https://tazkarti.com/data/matches-list-json.json"
+    # تم التعديل هنا لقراءة ملف المباريات الجماهيرية
+    api_url: str = "https://tazkarti.com/data/fanQueuesMatch-list-json.json"
     
     team_keywords: list[str] = field(
         default_factory=lambda: _env_list(
