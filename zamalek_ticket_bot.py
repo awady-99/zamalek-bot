@@ -117,12 +117,12 @@ class TelegramNotifier:
             log.error("Telegram send error: %s", exc)
             return False
 
-    def alert_ticket_available(self, match_title: str, match_details: str = "") -> bool:
+    def alert_ticket_available(self, match_title: str, tournament_name: str = "") -> bool:
         text = (
-            "🚨🚨 <b>تذاكر الزمالك نزلت الآن على تذكرتي!</b> 🚨🚨\n\n"
-            f"🏟️ <b>{match_title}</b>\n"
-            f"ℹ️ {match_details}\n\n"
-            "👉 <a href=\"https://www.tazkarti.com/#/matches\">اضغط هنا للدخول على الحجز فوراً</a>"
+            "فتح الحجز\n"
+            f"{match_title}\n"
+            f"{tournament_name}\n\n"
+            "https://tazkarti.com/#/matches"
         )
         return self.send(text)
 
@@ -223,7 +223,6 @@ class FastMonitor:
                     )
 
                     # --- فلتر الأمان للقوالب الوهمية ---
-                    # إذا كان العنوان فارغاً أو يحتوي فقط على "vs" يتم تجاهله تماماً
                     if not title or str(title).strip().lower() == "vs":
                         continue
                     
@@ -239,8 +238,11 @@ class FastMonitor:
                     
                     if not is_sold_out and match_key not in self.seen_matches:
                         log.warning("ZAMALEK MATCH FOUND: %s", title)
-                        date_info = match.get("matchDate") or match.get("date") or match.get("eventDate") or ""
-                        self.notifier.alert_ticket_available(title, f"التاريخ: {date_info}" if date_info else "")
+                        
+                        # استخراج اسم البطولة
+                        tournament_info = str(match.get("championshipName") or match.get("tournamentName") or match.get("tournament") or "").strip()
+                        
+                        self.notifier.alert_ticket_available(title, tournament_info)
                         self.seen_matches.add(match_key)
 
                 self.latest_detected_titles = current_titles
