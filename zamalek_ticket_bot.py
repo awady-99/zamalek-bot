@@ -182,13 +182,18 @@ class FastMonitor:
 
     def _fetch_matches_json(self) -> list[dict]:
         url = f"{self.cfg.api_url}?_={int(time.time() * 1000)}"
-        resp = self._session.get(url, headers=HEADERS, timeout=self.cfg.request_timeout_seconds)
-        if resp.status_code == 200:
-            data = resp.json()
-            if isinstance(data, list):
-                return data
-            elif isinstance(data, dict):
-                return data.get("data", []) or data.get("matches", []) or data.get("result", []) or [data]
+        try:
+            resp = self._session.get(url, headers=HEADERS, timeout=self.cfg.request_timeout_seconds)
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list):
+                    return data
+                elif isinstance(data, dict):
+                    return data.get("data", []) or data.get("matches", []) or data.get("result", []) or [data]
+            else:
+                log.error(f"Tazkarti API Error: HTTP {resp.status_code} - السيرفر غالباً محظور")
+        except Exception as e:
+            log.error(f"Connection Error: {e}")
         return []
 
     async def run(self) -> None:
