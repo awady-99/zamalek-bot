@@ -68,7 +68,6 @@ def _env_list(name: str, default: list[str]) -> list[str]:
 class Config:
     telegram_bot_token: str = _env_str("TELEGRAM_BOT_TOKEN", "")
     telegram_chat_id: str = _env_str("TELEGRAM_CHAT_ID", "")
-    # عدنا للملف الأصلي الذي يحتوي على أسماء الفرق والبطولات
     api_url: str = "https://tazkarti.com/data/matches-list-json.json"
     
     team_keywords: list[str] = field(
@@ -109,7 +108,7 @@ class TelegramNotifier:
 
     def send(self, text: str) -> bool:
         url = f"{self.API_BASE}/bot{self.cfg.telegram_bot_token}/sendMessage"
-        payload = {"chat_id": self.cfg.telegram_chat_id, "text": text, "parse_mode": "HTML"}
+        payload = {"chat_id": self.cfg.telegram_chat_id, "text": text}
         try:
             r = self._session.post(url, json=payload, timeout=10)
             return r.status_code == 200
@@ -118,12 +117,12 @@ class TelegramNotifier:
             return False
 
     def alert_ticket_available(self, match_title: str, tournament_name: str = "") -> bool:
-        text = (
-            "فتح الحجز\n"
-            f"{match_title}\n"
-            f"{tournament_name}\n\n"
-            "https://tazkarti.com/#/matches"
-        )
+        lines = ["فتح الحجز", match_title]
+        if tournament_name:
+            lines.append(tournament_name)
+        lines.append("\nhttps://tazkarti.com/#/matches")
+        
+        text = "\n".join(lines)
         return self.send(text)
 
 
@@ -139,7 +138,6 @@ class FastMonitor:
         self.last_api_status = "جاري الاتصال..."
         self.seen_matches: set[str] = set()
         self.latest_detected_titles: list[str] = []
-        self.last_raw_match: dict = {}
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -163,29 +161,22 @@ class FastMonitor:
                         text = msg.get("text", "").strip().lower()
                         sender_id = str(msg.get("chat", {}).get("id", ""))
 
-                        if sender_id == str(self.cfg.telegram_chat_id):
-                            if text in ("/ping", "/status", "ping", "status"):
-                                uptime_sec = int(time.time() - self.start_time)
-                                m, s = divmod(uptime_sec, 60)
-                                h, m = divmod(m, 60)
-                                
-                                matches_info = "\n".join([f"• {t}" for t in self.latest_detected_titles[:5]]) if self.latest_detected_titles else "لا توجد مباريات معروضة حالياً"
+                        if sender_id == str(self.cfg.telegram_chat_id) and text in ("/ping", "/status", "ping", "status"):
+                            uptime_sec = int(time.time() - self.start_time)
+                            m, s = divmod(uptime_sec, 60)
+                            h, m = divmod(m, 60)
+                            
+                            matches_info = "\n".join([f"• {t}" for t in self.latest_detected_titles[:5]]) if self.latest_detected_titles else "لا توجد مباريات معروضة حالياً"
 
-                                status_text = (
-                                    "⚡ <b>حالة البوت المباشرة:</b>\n\n"
-                                    f"⏱️ <b>مدة العمل:</b> {h} ساعة و {m} دقيقة\n"
-                                    f"🔄 <b>مرات الفحص:</b> {self.total_polls}\n"
-                                    f"🕒 <b>آخر فحص:</b> {self.last_poll_time}\n"
-                                    f"📡 <b>حالة الاتصال:</b> {self.last_api_status}\n\n"
-                                    f"📋 <b>المباريات الحقيقية المرصودة:</b>\n{matches_info}"
-                                )
-                                self.notifier.send(status_text)
-                            elif text in ("/debug", "debug"):
-                                if self.last_raw_match:
-                                    debug_text = json.dumps(self.last_raw_match, ensure_ascii=False, indent=2)[:3500]
-                                    self.notifier.send(f"🛠️ <b>بيانات الماتش الخام:</b>\n<pre>{debug_text}</pre>")
-                                else:
-                                    self.notifier.send("لا توجد بيانات متاحة حالياً. تأكد من أن الموقع يعمل.")
+                            status_text = (
+                                "⚡ حالة البوت المباشرة:\n\n"
+                                f"⏱️ مدة العمل: {h} ساعة و {m} دقيقة\n"
+                                f"🔄 مرات الفحص: {self.total_polls}\n"
+                                f"🕒 آخر فحص: {self.last_poll_time}\n"
+                                f"📡 حالة الاتصال: {self.last_api_status}\n\n"
+                                f"📋 المباريات الحقيقية المرصودة:\n{matches_info}"
+                            )
+                            self.notifier.send(status_text)
             except Exception:
                 pass
             await asyncio.sleep(2)
@@ -207,12 +198,12 @@ class FastMonitor:
                                 return v
                         return [data]
                 except json.JSONDecodeError:
-                    self.last_api_status = "⚠️ الموقع يطلب كابتشا (تم حظر السيرفر)"
+                    self.last_api_status = "⚠️ الموقع يطلب كابتشا"
                     return []
             else:
                 self.last_api_status = f"⚠️ حظر من الموقع (كود {resp.status_code})"
                 return []
-        except Exception as e:
+        except Exception:
             self.last_api_status = "⚠️ خطأ في الاتصال"
             return []
 
@@ -227,31 +218,64 @@ class FastMonitor:
                 self.total_polls += 1
                 self.last_poll_time = datetime.now().strftime("%I:%M:%S %p")
 
-                if matches and isinstance(matches, list) and len(matches) > 0:
-                    self.last_raw_match = matches[0]
-                elif matches:
-                    self.last_raw_match = matches
-
                 current_titles = []
                 for match in matches:
                     raw_str = json.dumps(match, ensure_ascii=False)
                     
-                    t1 = str(match.get('team1') or "").strip()
-                    t2 = str(match.get('team2') or "").strip()
-                    fallback_title = f"{t1} vs {t2}".strip()
-                    
-                    title = (
-                        match.get("matchName") or 
-                        match.get("title") or 
-                        match.get("name") or 
-                        match.get("eventName") or 
-                        fallback_title
+                    # استخراج بيانات البطولة بدقة
+                    tourn_obj = (
+                        match.get("championship") or 
+                        match.get("tournament") or 
+                        match.get("championshipName") or 
+                        match.get("tournamentName") or 
+                        ""
+                    )
+                    if isinstance(tourn_obj, dict):
+                        tournament_info = str(tourn_obj.get("nameAr") or tourn_obj.get("nameEn") or tourn_obj.get("descriptionAr") or "").strip()
+                    else:
+                        tournament_info = str(tourn_obj).strip()
+
+                    # استخراج أسماء الفريقين بدقة
+                    def _extract_team(keys_obj, keys_str):
+                        for k in keys_obj:
+                            v = match.get(k)
+                            if isinstance(v, dict):
+                                name = v.get("nameAr") or v.get("nameEn") or v.get("name")
+                                if name:
+                                    return str(name).strip()
+                            elif isinstance(v, str) and v.strip():
+                                return v.strip()
+                        for k in keys_str:
+                            v = match.get(k)
+                            if v and isinstance(v, str) and v.strip():
+                                return v.strip()
+                        return ""
+
+                    t1 = _extract_team(
+                        ["firstTeam", "team1", "homeTeam", "teamOne"],
+                        ["firstTeamNameAr", "team1NameAr", "firstTeamName", "team1Name", "teamOneNameAr", "homeTeamNameAr", "firstTeamNameEn", "team1NameEn"]
+                    )
+                    t2 = _extract_team(
+                        ["secondTeam", "team2", "awayTeam", "teamTwo"],
+                        ["secondTeamNameAr", "team2NameAr", "secondTeamName", "team2Name", "teamTwoNameAr", "awayTeamNameAr", "secondTeamNameEn", "team2NameEn"]
                     )
 
-                    if not title or title.lower() == "vs":
-                        title = f"مباراة (ID: {match.get('id', match.get('matchId', 'غير معروف'))})"
-                    
-                    title = str(title).strip()
+                    if t1 and t2:
+                        title = f"{t1} ضد {t2}"
+                    else:
+                        title = (
+                            match.get("matchNameAr") or 
+                            match.get("matchName") or 
+                            match.get("nameAr") or 
+                            match.get("title") or 
+                            match.get("name") or 
+                            match.get("eventName") or 
+                            ""
+                        )
+                        if not title or str(title).strip().lower() in ("vs", "ضد"):
+                            title = f"مباراة الزمالك (ID: {match.get('id', match.get('matchId', ''))})"
+                        title = str(title).strip()
+
                     current_titles.append(title)
 
                     is_zamalek = any(k.lower() in raw_str.lower() for k in self.cfg.team_keywords)
@@ -263,8 +287,6 @@ class FastMonitor:
                     
                     if not is_sold_out and match_key not in self.seen_matches:
                         log.warning("ZAMALEK MATCH FOUND: %s", title)
-                        
-                        tournament_info = str(match.get("championshipName") or match.get("tournamentName") or match.get("tournament") or "").strip()
                         self.notifier.alert_ticket_available(title, tournament_info)
                         self.seen_matches.add(match_key)
 
