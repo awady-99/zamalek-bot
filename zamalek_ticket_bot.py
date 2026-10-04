@@ -26,6 +26,26 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+# --- Subscriber Storage System ---
+SUBSCRIBERS_FILE = "subscribers.json"
+
+def load_subscribers() -> set[str]:
+    if os.path.exists(SUBSCRIBERS_FILE):
+        try:
+            with open(SUBSCRIBERS_FILE, "r", encoding="utf-8") as f:
+                return set(json.load(f))
+        except Exception as e:
+            logging.error("Error loading subscribers: %s", e)
+    return set()
+
+def save_subscribers(subs: set[str]) -> None:
+    try:
+        with open(SUBSCRIBERS_FILE, "w", encoding="utf-8") as f:
+            json.dump(list(subs), f)
+    except Exception as e:
+        logging.error("Error saving subscribers: %s", e)
+
+
 # --- Built-in Web Server for 24/7 Keep-Alive ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -67,7 +87,7 @@ def _env_list(name: str, default: list[str]) -> list[str]:
 @dataclass
 class Config:
     telegram_bot_token: str = _env_str("TELEGRAM_BOT_TOKEN", "")
-    telegram_chat_id: str = _env_str("TELEGRAM_CHAT_ID", "")
+    telegram_chat_id: str = _env_str("TELEGRAM_CHAT_ID", "") # معرف الإدمن الأساسي
     api_url: str = "https://tazkarti.com/data/matches-list-json.json"
     
     team_keywords: list[str] = field(
@@ -106,24 +126,26 @@ class TelegramNotifier:
         self.cfg = cfg
         self._session = requests.Session()
 
-    def send(self, text: str) -> bool:
+    def send(self, chat_id: str, text: str) -> bool:
         url = f"{self.API_BASE}/bot{self.cfg.telegram_bot_token}/sendMessage"
-        payload = {"chat_id": self.cfg.telegram_chat_id, "text": text}
+        payload = {"chat_id": chat_id, "text": text}
         try:
             r = self._session.post(url, json=payload, timeout=10)
             return r.status_code == 200
         except Exception as exc:
-            log.error("Telegram send error: %s", exc)
+            log.error("Telegram send error to %s: %s", chat_id, exc)
             return False
 
-    def alert_ticket_available(self, match_title: str, tournament_name: str = "") -> bool:
+    def broadcast_ticket_available(self, match_title: str, tournament_name: str, subscribers: set[str]) -> None:
         lines = ["فتح الحجز", match_title]
         if tournament_name:
             lines.append(tournament_name)
         lines.append("\nhttps://tazkarti.com/#/matches")
-        
         text = "\n".join(lines)
-        return self.send(text)
+        
+        # إرسال الرسالة لجميع المشتركين
+        for chat_id in subscribers:
+            self.send(chat_id, text)
 
 
 class FastMonitor:
@@ -138,6 +160,12 @@ class FastMonitor:
         self.last_api_status = "جاري الاتصال..."
         self.seen_matches: set[str] = set()
         self.latest_detected_titles: list[str] = []
+        
+        # تحميل قائمة المشتركين وإضافة الإدمن برمجياً
+        self.subscribers = load_subscribers()
+        if self.cfg.telegram_chat_id:
+            self.subscribers.add(self.cfg.telegram_chat_id)
+            save_subscribers(self.subscribers)
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -161,7 +189,26 @@ class FastMonitor:
                         text = msg.get("text", "").strip().lower()
                         sender_id = str(msg.get("chat", {}).get("id", ""))
 
-                        if sender_id == str(self.cfg.telegram_chat_id) and text in ("/ping", "/status", "ping", "status"):
+                        if not sender_id:
+                            continue
+
+                        # --- نظام المشتركين الجدد ---
+                        if text == "/start":
+                            if sender_id not in self.subscribers:
+                                self.subscribers.add(sender_id)
+                                save_subscribers(self.subscribers)
+                                self.notifier.send(sender_id, "✅ تم تفعيل الإشعارات بنجاح! ستصلك رسالة فور نزول تذاكر الزمالك. 🏹🤍")
+                            else:
+                                self.notifier.send(sender_id, "أنت مشترك بالفعل في الإشعارات! 🏹🤍")
+                                
+                        elif text == "/stop":
+                            if sender_id in self.subscribers:
+                                self.subscribers.remove(sender_id)
+                                save_subscribers(self.subscribers)
+                                self.notifier.send(sender_id, "❌ تم إيقاف الإشعارات.")
+                                
+                        # --- أوامر الإدمن فقط ---
+                        elif sender_id == str(self.cfg.telegram_chat_id) and text in ("/ping", "/status", "ping", "status"):
                             uptime_sec = int(time.time() - self.start_time)
                             m, s = divmod(uptime_sec, 60)
                             h, m = divmod(m, 60)
@@ -170,13 +217,14 @@ class FastMonitor:
 
                             status_text = (
                                 "⚡ حالة البوت المباشرة:\n\n"
+                                f"👥 عدد المشتركين: {len(self.subscribers)}\n"
                                 f"⏱️ مدة العمل: {h} ساعة و {m} دقيقة\n"
                                 f"🔄 مرات الفحص: {self.total_polls}\n"
                                 f"🕒 آخر فحص: {self.last_poll_time}\n"
                                 f"📡 حالة الاتصال: {self.last_api_status}\n\n"
                                 f"📋 المباريات الحقيقية المرصودة:\n{matches_info}"
                             )
-                            self.notifier.send(status_text)
+                            self.notifier.send(sender_id, status_text)
             except Exception:
                 pass
             await asyncio.sleep(2)
@@ -222,7 +270,6 @@ class FastMonitor:
                 for match in matches:
                     raw_str = json.dumps(match, ensure_ascii=False)
                     
-                    # استخراج بيانات البطولة بدقة
                     tourn_obj = (
                         match.get("championship") or 
                         match.get("tournament") or 
@@ -235,7 +282,6 @@ class FastMonitor:
                     else:
                         tournament_info = str(tourn_obj).strip()
 
-                    # استخراج أسماء الفريقين بدقة
                     def _extract_team(keys_obj, keys_str):
                         for k in keys_obj:
                             v = match.get(k)
@@ -287,7 +333,7 @@ class FastMonitor:
                     
                     if not is_sold_out and match_key not in self.seen_matches:
                         log.warning("ZAMALEK MATCH FOUND: %s", title)
-                        self.notifier.alert_ticket_available(title, tournament_info)
+                        self.notifier.broadcast_ticket_available(title, tournament_info, self.subscribers)
                         self.seen_matches.add(match_key)
 
                 self.latest_detected_titles = current_titles
